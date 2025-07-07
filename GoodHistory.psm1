@@ -7,6 +7,39 @@ Set-PSReadLineOption -HistorySaveStyle SaveIncrementally
 Set-PSReadLineOption -MaximumHistoryCount 1000
 Set-PSReadLineOption -MaximumKillRingCount 50
 
+# Modify fields sent to it with proper word wrapping.
+function wordwrap ($field, $maximumlinelength) {if ($null -eq $field) {return $null}
+$breakchars = ',.;?!\/ '; $wrapped = @()
+if (-not $maximumlinelength) {[int]$maximumlinelength = (100, $Host.UI.RawUI.WindowSize.Width | Measure-Object -Maximum).Maximum}
+if ($maximumlinelength -lt 60) {[int]$maximumlinelength = 60}
+if ($maximumlinelength -gt $Host.UI.RawUI.BufferSize.Width) {[int]$maximumlinelength = $Host.UI.RawUI.BufferSize.Width}
+foreach ($line in $field -split "`n", [System.StringSplitOptions]::None) {if ($line -eq "") {$wrapped += ""; continue}
+$remaining = $line
+while ($remaining.Length -gt $maximumlinelength) {$segment = $remaining.Substring(0, $maximumlinelength); $breakIndex = -1
+foreach ($char in $breakchars.ToCharArray()) {$index = $segment.LastIndexOf($char)
+if ($index -gt $breakIndex) {$breakIndex = $index}}
+if ($breakIndex -lt 0) {$breakIndex = $maximumlinelength - 1}
+$chunk = $segment.Substring(0, $breakIndex + 1); $wrapped += $chunk; $remaining = $remaining.Substring($breakIndex + 1)}
+if ($remaining.Length -gt 0 -or $line -eq "") {$wrapped += $remaining}}
+return ($wrapped -join "`n")}
+
+function goodhistory {# Inline help.
+function scripthelp ($section) {# (Internal) Generate the help sections from the comments section of the script.
+""; Write-Host -f yellow ("-" * 100); $pattern = "(?ims)^## ($section.*?)(##|\z)"; $match = [regex]::Match($scripthelp, $pattern); $lines = $match.Groups[1].Value.TrimEnd() -split "`r?`n", 2; Write-Host $lines[0] -f yellow; Write-Host -f yellow ("-" * 100)
+if ($lines.Count -gt 1) {wordwrap $lines[1] 100| Out-String | Out-Host -Paging}; Write-Host -f yellow ("-" * 100)}
+$scripthelp = Get-Content -Raw -Path $PSCommandPath; $sections = [regex]::Matches($scripthelp, "(?im)^## (.+?)(?=\r?\n)")
+if ($sections.Count -eq 1) {cls; Write-Host "$([System.IO.Path]::GetFileNameWithoutExtension($PSCommandPath)) Help:" -f cyan; scripthelp $sections[0].Groups[1].Value; ""; return}
+
+$selection = $null
+do {cls; Write-Host "$([System.IO.Path]::GetFileNameWithoutExtension($PSCommandPath)) Help Sections:`n" -f cyan; for ($i = 0; $i -lt $sections.Count; $i++) {
+"{0}: {1}" -f ($i + 1), $sections[$i].Groups[1].Value}
+if ($selection) {scripthelp $sections[$selection - 1].Groups[1].Value}
+$input = Read-Host "`nEnter a section number to view"
+if ($input -match '^\d+$') {$index = [int]$input
+if ($index -ge 1 -and $index -le $sections.Count) {$selection = $index}
+else {$selection = $null}} else {""; return}}
+while ($true); return}
+
 # Keep history clean and deduplicated.
 function maintainhistory {Register-EngineEvent PowerShell.OnIdle -SupportEvent -Action {if (-not (Test-Path $goodhistory) -or -not $history) {return}
 $raw = Get-Content $goodhistory; $cleaned = $raw | Select-Object -Unique | Select-Object -Last 1000
@@ -32,17 +65,17 @@ sal -name gethistory -value showhistory
 
 maintainhistory; prompt
 
-Export-ModuleMember -Function maintainhistory, prompt, showhistory
+Export-ModuleMember -Function goodhistory, maintainhistory, prompt, showhistory
 Export-ModuleMember -Alias gethistory
 
 <#
-## maintainhistory
+## MaintainHistory
 
 This module ensures continual refresh of the default $history file with only the valid and deduplicated commands from $goodhistory whenever the session is in an idle state. History is set to 1000 entries by default.
-## prompt
+## Prompt
 
 This is a wrapper for the PowerShell prompt to ensure only successful commands are saved to the $goodhistory file and eventually therefore, passed to the console $history. History is set to 1000 entries by default.
-## showhistory
+## ShowHistory
 
 See the customized command line history of successful commands side-by-side with the console history. You can specify the number of lines to show. If a line exists in the console history but not in the $goodhistory, then you know that the command either failed, or the console history has not yet been updated with the $goodhistory values.
 ## Active Module Status
@@ -54,25 +87,46 @@ This module operates in live state, rather than a passive one, meaning that it s
 	$Global:powershell = Split-Path $profile
 	$Global:goodhistory = "$powershell\Transcripts\successful_history.txt"
 
+The first 3 lines set variables for reference in this and other modules. Having a $profile directory for quick reference is handy for scripting in most instances. The other two variables are used directly in this module.
+
 	Set-PSReadLineOption -HistorySaveStyle SaveIncrementally
 	Set-PSReadLineOption -MaximumHistoryCount 1000
 	Set-PSReadLineOption -MaximumKillRingCount 50
 
-	function maintainhistory ...
-	
-	function prompt ...
-	
-	function showhistory ...
-	
-	maintainhistory; prompt
-
-The first 3 lines set variables for reference in this and other modules. Having a $profile directory for quick reference is handy for scripting in most instances. The other two variables are used directly in this module.
-
 The next 3 lines tell PowerShell to save every command to disk immediately, set the history length to 1000 commands, which is a bit overkill, but should meet even the most advanced user needs, and sets the undo/redo editing via the shell to 50 entries, which is good for being able to backtrack a lot of steps, if you so choose.
+
+## Operation
+
+	function maintainhistory ...
+	function prompt ...
 
 The prompt function is configured to saved only successfully executed commands to the $goodhistory and the maintainhistory function is designed to sort, deduplicate and import the current $goodhistory into the console $history everytime the session is idle. Since this takes fractions of a second to happen, it would be very unlikely for any user to notice any performance impact from this activity.
 
-Only the showhistory function is passive. It will only run when you call it.
+	maintainhistory; prompt
+
+The showhistory and goodhistory functions are passive. They will only run when you call them.
 
 The final step of this module is the act of calling both of the first two functions into action, which is what makes this module work in a live state.
+## License
+MIT License
+
+Copyright © 2025 Craig Plath
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell 
+copies of the Software, and to permit persons to whom the Software is 
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in 
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, 
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN 
+THE SOFTWARE.
 ##>
